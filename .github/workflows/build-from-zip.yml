@@ -1,0 +1,118 @@
+name: Build from Zip
+
+# 用法：新建 GitHub 仓库 → 上传本工作流(.github/workflows/build-from-zip.yml)和源码 zip
+# 两个文件 → Actions 页面 Run workflow。无需任何 secrets（签名密钥已内置在源码包中）。
+#
+# 工作流自动在仓库中查找 zip（根目录或子目录均可，仅要求仓库里只有一个 zip），
+# 解压到工作区后执行 assembleDefaultRelease，产出诊断版 APK + R8 mapping。
+#
+# 提示：若先推工作流后传 zip，无 zip 的那次运行会显示为跳过（正常现象），上传 zip 后
+# 自动触发真正构建；也可手动 Run workflow 并在输入框指定 zip 文件名。
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_name:
+        description: '源码 zip 文件名（留空 = 自动识别仓库内唯一的 zip）'
+        required: false
+        default: ''
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Unzip & Build Default Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate source zip
+        id: locate
+        env:
+          ZIP_INPUT: ${{ inputs.zip_name }}
+        run: |
+          set -e
+          if [ -n "$ZIP_INPUT" ]; then
+            if [ ! -f "$ZIP_INPUT" ]; then
+              echo "::error::指定的 zip 不存在：$ZIP_INPUT"
+              exit 1
+            fi
+            SRC_ZIP="$ZIP_INPUT"
+          else
+            mapfile -t zips < <(find . -name '*.zip' -type f -not -path './.git/*' | sort)
+            if [ "${#zips[@]}" -eq 0 ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo '::notice::仓库里还没有源码 zip，跳过本次构建。上传 zip 后会自动重新触发。'
+              exit 0
+            fi
+            if [ "${#zips[@]}" -gt 1 ]; then
+              echo "::error::仓库里有多个 zip，请删除多余的，或手动 Run workflow 并填写 zip 文件名。找到的 zip："
+              printf '  %s\n' "${zips[@]}"
+              exit 1
+            fi
+            SRC_ZIP="${zips[0]}"
+          fi
+          unzip -t "$SRC_ZIP" > /dev/null || { echo "::error::不是有效的 zip 文件：$SRC_ZIP"; exit 1; }
+          echo "SRC_ZIP=$SRC_ZIP" >> "$GITHUB_ENV"
+          echo "找到源码包：$SRC_ZIP"
+
+      - name: Set up Amazon Corretto 21
+        if: steps.locate.outputs.skip != 'true'
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'corretto'
+
+      - name: Set up Gradle
+        if: steps.locate.outputs.skip != 'true'
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Unzip source to workspace
+        if: steps.locate.outputs.skip != 'true'
+        run: |
+          # 源码 zip 内为相对路径（app/ gradle/ gradlew ...），直接解压到工作区根目录；
+          # -o 覆盖同名文件（不会影响正在运行的本工作流）
+          unzip -q -o "$SRC_ZIP" -d .
+          chmod +x gradlew
+          echo "=== 解压完成，顶层内容 ==="
+          ls -la
+
+      - name: Create local.properties
+        if: steps.locate.outputs.skip != 'true'
+        run: |
+          {
+            printf 'BUILT_IN_API_KEY=%s\n' ""
+            printf 'BUILT_IN_API_KEY_GOOGLE=%s\n' ""
+          } > local.properties
+
+      - name: Build release APK
+        if: steps.locate.outputs.skip != 'true'
+        env:
+          # 诊断版内置签名（app/release.keystore），无需 secrets
+          ORG_GRADLE_PROJECT_RELEASE_STORE_FILE: release.keystore
+          ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: photon2026
+          ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: nova
+          ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: photon2026
+        run: ./gradlew ":app:assembleDefaultRelease" --console=plain
+
+      - name: Save release APK
+        if: steps.locate.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-apk
+          path: app/build/outputs/apk/default/release/*.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Save R8 mapping (for crash stack de-obfuscation)
+        if: steps.locate.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-mapping
+          path: app/build/outputs/mapping/defaultRelease/mapping.txt
+          if-no-files-found: error
+          retention-days: 30
