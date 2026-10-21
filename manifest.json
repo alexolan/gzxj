@@ -1,0 +1,34 @@
+{
+  "name": "photoncamera-overlay",
+  "version": "1.0",
+  "date": "2026-10-19",
+  "upstream": "https://github.com/bjzhou/PhotonCamera",
+  "baseline_commit": "6b7afa28",
+  "baseline_desc": "feat: raw engine preview LUT atlas and shader sampling",
+  "patches": [
+    {
+      "file": "0001-crash-fix-metadata-safe-read.patch",
+      "title": "闪退修复：荣耀等机型 HAL 截断元数据安全读取",
+      "detail": "Camera2 回调里 12 处裸读 CaptureResult 元数据改走 readMetadataOrNull 安全包装，畸形数据=不可用而非崩溃（BufferUnderflowException 根因修复）",
+      "files": 5
+    },
+    {
+      "file": "0002-diagnostic-logging.patch",
+      "title": "诊断日志体系",
+      "detail": "logcat/crash/Download 三通道日志落盘 + 启动链路跟踪（PLog/StartupTrace/DownloadLogWriter）",
+      "files": 4
+    },
+    {
+      "file": "0003-ai-composition.patch",
+      "title": "AI 构图功能",
+      "detail": "取景器 ✨ 按钮 → 抓帧分析（云端 OpenAI 兼容 API，如 GLM；未配置自动回退本机离线分析）→ 建议卡片（居中悬浮、卡内滚动、与取景手势隔离）",
+      "files": 7
+    }
+  ],
+  "signing": {
+    "keystore": "files/app/release.keystore",
+    "store_password": "photon2026",
+    "key_alias": "nova",
+    "key_password": "photon2026"
+  }
+}
