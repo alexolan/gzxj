@@ -1,0 +1,202 @@
+diff --git a/app/src/main/java/com/hinnka/mycamera/camera/Camera2Controller.kt b/app/src/main/java/com/hinnka/mycamera/camera/Camera2Controller.kt
+index bbf6c7ef..989fb269 100644
+--- a/app/src/main/java/com/hinnka/mycamera/camera/Camera2Controller.kt
++++ b/app/src/main/java/com/hinnka/mycamera/camera/Camera2Controller.kt
+@@ -464,8 +464,8 @@ class Camera2Controller(private val context: Context) {
+             _enginePreviewSource.value = null
+             return
+         }
+-        val gains = frame.get(CaptureResult.COLOR_CORRECTION_GAINS)
+-            ?: result.get(CaptureResult.COLOR_CORRECTION_GAINS)
++        val gains = frame.readMetadataOrNull(CaptureResult.COLOR_CORRECTION_GAINS, cameraId)
++            ?: result.readMetadataOrNull(CaptureResult.COLOR_CORRECTION_GAINS, cameraId)
+         if (gains == null) {
+             _enginePreviewSource.value = null
+             return
+@@ -475,11 +475,11 @@ class Camera2Controller(private val context: Context) {
+             enginePreviewCharacteristics = characteristics
+             PLog.d(TAG, "Engine preview source camera=$cameraId")
+         }
+-        val mode = frame.get(CaptureResult.COLOR_CORRECTION_MODE)
+-            ?: result.get(CaptureResult.COLOR_CORRECTION_MODE)
++        val mode = frame.readMetadataOrNull(CaptureResult.COLOR_CORRECTION_MODE, cameraId)
++            ?: result.readMetadataOrNull(CaptureResult.COLOR_CORRECTION_MODE, cameraId)
+         val transform = if (mode == CaptureResult.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX) {
+-            frame.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
+-                ?: result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
++            frame.readMetadataOrNull(CaptureResult.COLOR_CORRECTION_TRANSFORM, cameraId)
++                ?: result.readMetadataOrNull(CaptureResult.COLOR_CORRECTION_TRANSFORM, cameraId)
+         } else null
+         val source = RawEnginePreviewSource(
+             cameraId = cameraId,
+@@ -970,7 +970,7 @@ class Camera2Controller(private val context: Context) {
+             multiFrameCaptureRole = result.request.tag as? MultiFrameCaptureRole,
+             desiredExposureProduct = desiredExposureProduct,
+             dynamicBlackLevelByCfaPosition = result
+-                .get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
++                .readMetadataOrNull(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+                 ?.takeIf { it.size >= 4 }
+                 ?.copyOf(4),
+         )
+@@ -994,7 +994,7 @@ class Camera2Controller(private val context: Context) {
+     )
+ 
+     private fun captureChannelNoiseProfile(result: CaptureResult): FloatArray? {
+-        return result.get(CaptureResult.SENSOR_NOISE_PROFILE)
++        return result.readMetadataOrNull(CaptureResult.SENSOR_NOISE_PROFILE)
+             ?.takeIf { it.isNotEmpty() }
+             ?.let { profile ->
+                 FloatArray(profile.size * 2) { coefficientIndex ->
+@@ -4181,13 +4181,16 @@ class Camera2Controller(private val context: Context) {
+     }
+ 
+     private fun readWhiteBalanceResult(result: CaptureResult, awbMode: Int): WhiteBalanceResultSnapshot {
++        // 荣耀等机型 HAL 可能返回截断的元数据缓冲，裸读 COLOR_CORRECTION_* 会在框架反序列化时
++        // 抛 BufferUnderflowException 直接击穿相机回调线程。统一走 readMetadataOrNull：畸形=不可用。
++        val activeCameraId = getActiveOpenCameraId()
+         val cctTemperature = if (Build.VERSION.SDK_INT >= 36) {
+-            result.get(CaptureResult.COLOR_CORRECTION_COLOR_TEMPERATURE)
++            result.readMetadataOrNull(CaptureResult.COLOR_CORRECTION_COLOR_TEMPERATURE, activeCameraId)
+         } else {
+             null
+         }
+         val cctTint = if (Build.VERSION.SDK_INT >= 36) {
+-            result.get(CaptureResult.COLOR_CORRECTION_COLOR_TINT)
++            result.readMetadataOrNull(CaptureResult.COLOR_CORRECTION_COLOR_TINT, activeCameraId)
+         } else {
+             null
+         }
+@@ -4196,7 +4199,7 @@ class Camera2Controller(private val context: Context) {
+             colorTemperature = cctTemperature,
+             colorTint = cctTint,
+             gains = readColorCorrectionGains(result),
+-            transform = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
++            transform = result.readMetadataOrNull(CaptureResult.COLOR_CORRECTION_TRANSFORM, activeCameraId)
+         )
+     }
+ 
+@@ -8903,7 +8906,7 @@ class Camera2Controller(private val context: Context) {
+                     multiFrameCaptureRole = frozenMetadata?.multiFrameCaptureRole
+                         ?: (frameResult.request.tag as? MultiFrameCaptureRole),
+                     dynamicBlackLevelByCfaPosition = frameResult
+-                        .get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
++                        .readMetadataOrNull(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+                         ?.takeIf { it.size >= 4 }
+                         ?.copyOf(4)
+                         ?: frozenMetadata?.dynamicBlackLevelByCfaPosition?.copyOf(),
+diff --git a/app/src/main/java/com/hinnka/mycamera/raw/RawMetadata.kt b/app/src/main/java/com/hinnka/mycamera/raw/RawMetadata.kt
+index d8dd61ca..4a9a3c38 100644
+--- a/app/src/main/java/com/hinnka/mycamera/raw/RawMetadata.kt
++++ b/app/src/main/java/com/hinnka/mycamera/raw/RawMetadata.kt
+@@ -339,7 +339,7 @@ data class RawMetadata(
+             // 3. 获取黑电平
+             // 注意：动态黑电平和静态黑电平模式都是按 2x2 Bayer 位置存储的
+             // 需要根据 CFA 模式重新排列为 [R, Gr, Gb, B] 通道顺序
+-            val dynamicBlackLevel = captureResult.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
++            val dynamicBlackLevel = captureResult.readMetadataOrNull(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+             val staticBlackLevelPattern = characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
+ 
+             // 先获取按 Bayer 位置 (0,0), (1,0), (0,1), (1,1) 顺序的黑电平
+@@ -434,19 +434,19 @@ data class RawMetadata(
+                 }
+                 ?.copyOf(4)
+             val camera2ColorCorrectionTransform = captureResult
+-                .get(CaptureResult.COLOR_CORRECTION_TRANSFORM)
++                .readMetadataOrNull(CaptureResult.COLOR_CORRECTION_TRANSFORM)
+                 ?.let(::extractCCM)
+                 ?.takeIf { matrix ->
+                     matrix.size == 9 && matrix.all(Float::isFinite)
+                 }
+             val camera2ColorCorrectionMode = captureResult
+-                .get(CaptureResult.COLOR_CORRECTION_MODE)
++                .readMetadataOrNull(CaptureResult.COLOR_CORRECTION_MODE)
+             val cameraWhite = computeCameraWhiteFromCharacteristics(characteristics, wbGains)
+             val whitePointXy = computeWhiteXyFromCharacteristics(characteristics, wbGains)
+             val colorTemperature = whitePointXy?.let(DngSdkColorSpec::colorTemperatureForXy)
+ 
+             // 6. 获取镜头阴影校正
+-            val shadingMap = captureResult.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
++            val shadingMap = captureResult.readMetadataOrNull(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
+             var lensShadingMap: FloatArray? = null
+             var shadingWidth = 0
+             var shadingHeight = 0
+@@ -522,7 +522,7 @@ data class RawMetadata(
+                 } else {
+                     RawNoiseProfileLayout.NONE
+                 },
+-                afRegions = captureResult.get(CaptureResult.CONTROL_AF_REGIONS),
++                afRegions = captureResult.readMetadataOrNull(CaptureResult.CONTROL_AF_REGIONS),
+                 activeArray = activeArray,
+                 aeMode = aeMode,
+                 exposureCompensation = exposureCompensation,
+@@ -536,13 +536,13 @@ data class RawMetadata(
+                 sensorPhysicalHeightMm = sensorPhysicalSize?.height ?: 0f,
+                 sensorPixelArrayWidth = sensorPixelArraySize?.width ?: 0,
+                 sensorPixelArrayHeight = sensorPixelArraySize?.height ?: 0,
+-                sceneHasFace = captureResult.get(CaptureResult.STATISTICS_FACES)
++                sceneHasFace = captureResult.readMetadataOrNull(CaptureResult.STATISTICS_FACES)
+                     ?.isNotEmpty() == true,
+             )
+         }
+ 
+         private fun extractChannelNoiseProfile(captureResult: CaptureResult): FloatArray {
+-            val noiseProfile = captureResult.get(CaptureResult.SENSOR_NOISE_PROFILE)
++            val noiseProfile = captureResult.readMetadataOrNull(CaptureResult.SENSOR_NOISE_PROFILE)
+             return if (noiseProfile != null && noiseProfile.isNotEmpty()) {
+                 FloatArray(noiseProfile.size * 2) { index ->
+                     val pair = noiseProfile[index / 2]
+diff --git a/app/src/main/java/com/hinnka/mycamera/utils/RawProcessor.kt b/app/src/main/java/com/hinnka/mycamera/utils/RawProcessor.kt
+index 64f4541d..46f16206 100644
+--- a/app/src/main/java/com/hinnka/mycamera/utils/RawProcessor.kt
++++ b/app/src/main/java/com/hinnka/mycamera/utils/RawProcessor.kt
+@@ -5,6 +5,7 @@ import android.hardware.camera2.CameraCharacteristics
+ import android.hardware.camera2.CaptureResult
+ import android.media.ExifInterface
+ import android.util.Log
++import com.hinnka.mycamera.camera.readMetadataOrNull
+ import com.hinnka.mycamera.camera.readMetadataOrThrow
+ import com.hinnka.mycamera.camera.MalformedCaptureMetadataException
+ import com.hinnka.mycamera.camera.AspectRatio
+@@ -266,7 +267,7 @@ object RawProcessor {
+     }
+ 
+     private fun resolveDngWriterNoiseProfile(captureResult: CaptureResult): FloatArray {
+-        val source = captureResult.get(CaptureResult.SENSOR_NOISE_PROFILE)
++        val source = captureResult.readMetadataOrNull(CaptureResult.SENSOR_NOISE_PROFILE)
+             ?.takeIf { it.size >= 3 }
+             ?: return floatArrayOf(0f, 0f)
+ 
+diff --git a/app/src/main/java/com/hinnka/mycamera/utils/SuperResolutionDngWriter.kt b/app/src/main/java/com/hinnka/mycamera/utils/SuperResolutionDngWriter.kt
+index e4aefb72..a45a6ad1 100644
+--- a/app/src/main/java/com/hinnka/mycamera/utils/SuperResolutionDngWriter.kt
++++ b/app/src/main/java/com/hinnka/mycamera/utils/SuperResolutionDngWriter.kt
+@@ -8,6 +8,7 @@ import android.hardware.camera2.CaptureResult
+ import android.hardware.camera2.params.ColorSpaceTransform
+ import android.os.Build
+ import android.os.SystemClock
++import com.hinnka.mycamera.camera.readMetadataOrNull
+ import com.hinnka.mycamera.camera.readMetadataOrThrow
+ import com.hinnka.mycamera.camera.CaptureInfo
+ import com.hinnka.mycamera.raw.DngProfileGainTableMap
+@@ -1606,7 +1607,7 @@ object SuperResolutionDngWriter {
+     }
+ 
+     private fun buildNoiseProfile(captureResult: CaptureResult): List<Double>? {
+-        val profile = captureResult.get(CaptureResult.SENSOR_NOISE_PROFILE)
++        val profile = captureResult.readMetadataOrNull(CaptureResult.SENSOR_NOISE_PROFILE)
+             ?.takeIf { it.size >= 3 }
+             ?: return null
+         fun safePair(index: Int): Pair<Double, Double>? {
+diff --git a/app/src/main/java/com/hinnka/mycamera/viewmodel/CameraViewModel.kt b/app/src/main/java/com/hinnka/mycamera/viewmodel/CameraViewModel.kt
+index e17a671a..0b697708 100644
+--- a/app/src/main/java/com/hinnka/mycamera/viewmodel/CameraViewModel.kt
++++ b/app/src/main/java/com/hinnka/mycamera/viewmodel/CameraViewModel.kt
+@@ -6279,7 +6279,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application)
+                 ?.dynamicBlackLevelByCfaPosition
+                 ?.copyOf()
+                 ?: captureResult
+-                    ?.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
++                    ?.readMetadataOrNull(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+                     ?.takeIf { it.size >= 4 }
+                     ?.copyOf(4),
+             role = when (
